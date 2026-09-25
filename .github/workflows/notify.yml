@@ -1,0 +1,86 @@
+name: Canvas ddl
+
+on:
+  schedule:
+    # UTC only — GitHub Actions cron does not know about timezones.
+    # Default: every day at 12:00 UTC = 08:00 New York (EDT), 07:00 (EST).
+    #   evening, 20:00 New York ->  "0 0 * * *"
+    #   Mondays only            ->  "0 12 * * 1"
+    # Twice a year DST shifts this by an hour. For a deadline digest that is
+    # fine; if it bothers you, edit the hour.
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "issue (no app needed) or bark (iPhone push)"
+        type: choice
+        options: [issue, bark]
+        default: issue
+      include_events:
+        description: "Also list class meetings and office hours, not just work you submit"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Print the digest into the log instead of delivering it"
+        type: boolean
+        default: false
+
+concurrency:
+  group: canvas-ddl
+  cancel-in-progress: false
+
+permissions:
+  contents: write # read would do, but the keep-alive step below needs to commit
+  issues: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Send digest
+        env:
+          CANVAS_ICS_URL: ${{ secrets.CANVAS_ICS_URL }}
+          TIMEZONE: ${{ vars.TIMEZONE || 'America/Los_Angeles' }}
+          CHANNEL: ${{ inputs.channel || vars.CHANNEL || 'issue' }}
+          INCLUDE_EVENTS: ${{ inputs.include_events && '1' || vars.INCLUDE_EVENTS || '' }}
+          IGNORE_TITLES: ${{ vars.IGNORE_TITLES }}
+          EXAM_TITLES: ${{ vars.EXAM_TITLES }}
+          WINDOW_DAYS: ${{ vars.WINDOW_DAYS }}
+          SOON_DAYS: ${{ vars.SOON_DAYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: |
+          python -m canvas_ddl ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # GitHub turns off scheduled workflows in a PUBLIC repository after 60
+      # days with no repository activity, which would end the digest in the
+      # middle of a term without telling you. A dated marker committed every
+      # few weeks counts as activity. Private repositories are not subject to
+      # the rule, so this does nothing there.
+      - name: Keep the schedule alive
+        if: ${{ github.event_name == 'schedule' && !github.event.repository.private }}
+        run: |
+          set -e
+          last=$(git log -1 --format=%ct)
+          age_days=$(( ( $(date +%s) - last ) / 86400 ))
+          echo "Last commit was $age_days days ago."
+          if [ "$age_days" -lt 21 ]; then
+            echo "Recent enough; nothing to do."
+            exit 0
+          fi
+          date -u +%Y-%m-%dT%H:%M:%SZ > .github/last-keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/last-keepalive
+          git commit -m "Keep the scheduled workflow enabled"
+          git push
