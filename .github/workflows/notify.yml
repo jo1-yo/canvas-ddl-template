@@ -35,6 +35,10 @@ permissions:
 
 jobs:
   notify:
+    # The template itself has no Canvas secret, so its daily cron would fail
+    # every morning. Copies made with "Use this template" get their own name
+    # and run normally; manual runs still work here for testing.
+    if: ${{ github.event_name != 'schedule' || github.repository != 'jo1-yo/canvas-ddl-template' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
